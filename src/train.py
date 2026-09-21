@@ -2,6 +2,7 @@ import torch
 from torchvision import models
 import torch.nn as nn
 from torch.utils.data.dataloader import DataLoader
+from torch.optim.lr_scheduler import CosineAnnealingLR
 from sklearn.metrics import classification_report
 import os
 from sklearn.metrics import roc_auc_score
@@ -21,6 +22,7 @@ def train(ckpt_path, train_dataset, val_dataset, writer, batch_size=16, device="
     loss_fn = nn.CrossEntropyLoss()
 
     optimizer = torch.optim.AdamW(model.parameters(), lr)
+    scheduler = CosineAnnealingLR(optimizer, T_max=epochs)
 
     best_auroc = -1.0
     for epoch in range(epochs):
@@ -33,18 +35,16 @@ def train(ckpt_path, train_dataset, val_dataset, writer, batch_size=16, device="
             optimizer.zero_grad()
 
             outputs = model(images)
-
             loss = loss_fn(outputs, labels)
-            writer.add_scalar("Loss/train", loss, epoch)
 
             loss.backward()
-
             optimizer.step()
 
             running_loss += loss.item()
 
         avg_loss = running_loss/len(train_dataloader)
-        print(f"Epoch: {epoch} - Loss: {avg_loss}")
+        writer.add_scalar("Avg loss", avg_loss, epoch)
+        print(f"Epoch: {epoch} - Loss: {avg_loss:.4f}")
 
 
         if epoch % print_report == 0:
@@ -106,6 +106,9 @@ def train(ckpt_path, train_dataset, val_dataset, writer, batch_size=16, device="
                 # Salvataggio del modello
                 torch.save({"encoder": sd}, file_path)
                 print(f"  -> Saved {file_path} (AUROC {auroc:.4f})")
+
+        scheduler.step()
+        writer.add_scalar("Train/Learning_Rate", scheduler.get_last_lr()[0], epoch)
 
     writer.close()
     return best_auroc, model
