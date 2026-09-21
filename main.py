@@ -2,7 +2,16 @@ from torchvision import datasets, transforms
 import torch
 import argparse
 from torch.utils.tensorboard import SummaryWriter
-from .src.train import train
+from src.train import train
+from src.eval import evaluate
+import os
+from src.config import IMG_MEAN, IMG_STD
+
+def set_deterministic(seed=42):
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
 
 def main():
     parser = argparse.ArgumentParser(
@@ -10,47 +19,66 @@ def main():
             description="Argomenti di configurazione dell'addestramento"
         )
     # Dati di input
-    parser.add_argument("--ckpt_path", type=str, default="checkpoint", description="Path alla cartella in cui salvare il checkpoint del modello")
-    parser.add_argument("--dataset_path", type=str, default="dataset", description="Path alla cartella usata per l'addestramento")
-    parser.add_argument("--output_dir", type=str, default="dataset", description="Path alla cartella in cui salvare i risultati")
+    parser.add_argument("--ckpt_path", type=str, default="checkpoint", help="Path alla cartella in cui salvare il checkpoint del modello")
+    parser.add_argument("--dataset_path", type=str, default="dataset", help="Path alla cartella usata per l'addestramento")
+    parser.add_argument("--output_path", type=str, default="output", help="Path alla cartella in cui salvare i risultati")
+    parser.add_argument("--project_name", type=str, default="project_name", help="Nome del progetto")
+
 
     # Parametri di configurazione dell'addestramento
-    parser.add_argument("--lr", type=float, default=1e-4, description="Learning rate")
-    parser.add_argument("--epochs", type=int, default=15, description="Numero di epoche per cui eseguire l'addestramento")
-    parser.add_argument("--batch_size", type=int, default=16, default="Dimensione del batch size usato durante l'addestramento")
-    parser.add_argument("--device", type=str, default="cuda", description="Device da usare per l'accelerazione dell'addestramento")
-    parser.add_argument("--train_rate", type=float, default=0.7, description="Percentuale di immagini da usare per lo split di train")
-    parser.add_argument("--val_rate", type=float, default=0.2, description="Percentuali di immagini da usare per lo split di validation")
-    parser.add_argument("--test_rate", type=float, default=0.1, description="Percentuali di immagini da usare per lo split di test")
+    parser.add_argument("--lr", type=float, default=1e-4, help="Learning rate")
+    parser.add_argument("--epochs", type=int, default=15, help="Numero di epoche per cui eseguire l'addestramento")
+    parser.add_argument("--batch_size", type=int, default=16, help="Dimensione del batch size usato durante l'addestramento")
+    parser.add_argument("--device", type=str, default="cuda", help="Device da usare per l'accelerazione dell'addestramento")
+    parser.add_argument("--train_rate", type=float, default=0.7, help="Percentuale di immagini da usare per lo split di train")
+    parser.add_argument("--val_rate", type=float, default=0.2, help="Percentuali di immagini da usare per lo split di validation")
+    parser.add_argument("--test_rate", type=float, default=0.1, help="Percentuali di immagini da usare per lo split di test")
+    parser.add_argument("--print_report", type=int, default=5, help="Intervallo ogni quale vengono stampate le metriche di valutazione")
+
 
     # Seed per la riproducibilità degli esperimenti
-    parser.add_argument("--seed", type=int, default=42, description="Random seed per riproducibilità")
+    parser.add_argument("--seed", type=int, default=42, help="Random seed per riproducibilità")
 
-    parser.add_argument("--num_workers", type=int, default=4, description="Numero di workers per il dataloader")
+    parser.add_argument("--num_workers", type=int, default=4, help="Numero di workers per il dataloader")
 
     args = parser.parse_args()
 
-    writer = SummaryWriter()
+    # Imposto seed per determinismo
+    set_deterministic(args.seed)
+
+    run_output_path = os.path.join(args.output_path, args.project_name, f"seed_{args.seed}")
+    run_ckpt_path = os.path.join(run_output_path, args.ckpt_path)
+    log_dir = os.path.join(run_output_path, "logs")
+
+    # Assicuro che le directory esistano
+    os.makedirs(args.dataset_path, exist_ok=True)
+    os.makedirs(run_output_path, exist_ok=True)
+    os.makedirs(run_ckpt_path, exist_ok=True)
+
+    # Instanzio il writer di TensorBoards
+    writer = SummaryWriter(log_dir=log_dir)
 
     # Trasformazioni da applicare a tutte le immagini del dataset
     transform = transforms.Compose([
         transforms.Resize((256,256)),
         transforms.ToTensor(),
-        transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+        transforms.Normalize(mean=IMG_MEAN, std=IMG_STD)
     ])
 
     # Caricamento del dataset con divisione in cartelle
     dataset = datasets.ImageFolder(root=args.dataset_path, transform=transform)
 
     # Split del dataset
-    train_size = len(dataset) * args.train_rate
-    val_size = len(dataset) * args.val_rate
-    test_size = len(dataset) * args.test_rate
-    train_dataset, val_dataset, test_dataset = torch.utils.data.random_split(dataset, [train_size, val_size, test_size], seed=args.seed)
+    total_size = len(dataset)
+    train_size = int(total_size * args.train_rate)
+    val_size = int(total_size* args.val_rate)
+    test_size = total_size - train_size - val_size
+    split_generator = torch.Generator().manual_seed(args.seed)
+    train_dataset, val_dataset, test_dataset = torch.utils.data.random_split(dataset, [train_size, val_size, test_size], generator=split_generator)
 
-    _, model = train(ckpt_path=args.ckpt_path, train_dataset=train_dataset, val_dataset=val_dataset, writer=writer, batch_size=args.batch_size, device=args.device, lr=args.lr, epochs=args.epochs, seed=args.seed, num_workers=args.num_workers)
+    _, model = train(ckpt_path=run_ckpt_path, train_dataset=train_dataset, val_dataset=val_dataset, writer=writer, batch_size=args.batch_size, device=args.device, lr=args.lr, epochs=args.epochs, seed=args.seed, num_workers=args.num_workers, print_report=args.print_report)
 
-    eval(test_dataset, output_dir=args.output_dir, model=model, batch_size=args.batch_size, num_workers=args.num_workers, device=args.device)
+    evaluate(test_dataset, output_dir=run_output_path, model=model, batch_size=args.batch_size, num_workers=args.num_workers, device=args.device)
 
 
 

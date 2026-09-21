@@ -1,2 +1,6 @@
 dataset/
 .venv/
+checkpoint/
+output/
+runs/
+__pycache__/
