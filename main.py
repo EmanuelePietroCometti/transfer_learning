@@ -34,6 +34,9 @@ def main():
     parser.add_argument("--val_rate", type=float, default=0.2, help="Percentuali di immagini da usare per lo split di validation")
     parser.add_argument("--test_rate", type=float, default=0.1, help="Percentuali di immagini da usare per lo split di test")
     parser.add_argument("--print_report", type=int, default=5, help="Intervallo ogni quale vengono stampate le metriche di valutazione")
+    parser.add_argument("--freeze_bn", type=int, default=0, help="1 = running stats delle BN congelate")
+    parser.add_argument("--backbone_lr_mult", type=float, default=1.0, help="LR backbone = lr * mult")
+    parser.add_argument("--l2sp", type=float, default=0.0, help="Richiamo verso i pesi ImageNet (0 = disattivo)")
 
 
     # Seed per la riproducibilità degli esperimenti
@@ -48,7 +51,6 @@ def main():
 
     run_output_path = os.path.join(args.output_path, args.project_name, f"seed_{args.seed}")
     run_ckpt_path = os.path.join(run_output_path, args.ckpt_path)
-    log_dir = os.path.join(run_output_path, "logs")
 
     # Assicuro che le directory esistano
     os.makedirs(args.dataset_path, exist_ok=True)
@@ -56,11 +58,12 @@ def main():
     os.makedirs(run_ckpt_path, exist_ok=True)
 
     # Instanzio il writer di TensorBoards
-    writer = SummaryWriter(log_dir=log_dir)
+    writer = SummaryWriter()
 
     # Trasformazioni da applicare a tutte le immagini del dataset
     transform = transforms.Compose([
         transforms.Resize((256,256)),
+        # transforms.CenterCrop((224,224)),
         transforms.ToTensor(),
         transforms.Normalize(mean=IMG_MEAN, std=IMG_STD)
     ])
@@ -76,7 +79,7 @@ def main():
     split_generator = torch.Generator().manual_seed(args.seed)
     train_dataset, val_dataset, test_dataset = torch.utils.data.random_split(dataset, [train_size, val_size, test_size], generator=split_generator)
 
-    _, model = train(ckpt_path=run_ckpt_path, train_dataset=train_dataset, val_dataset=val_dataset, writer=writer, batch_size=args.batch_size, device=args.device, lr=args.lr, epochs=args.epochs, seed=args.seed, num_workers=args.num_workers, print_report=args.print_report)
+    _, model = train(ckpt_path=run_ckpt_path, train_dataset=train_dataset, val_dataset=val_dataset, writer=writer, batch_size=args.batch_size, device=args.device, lr=args.lr, epochs=args.epochs, seed=args.seed, num_workers=args.num_workers, print_report=args.print_report, freeze_bn=bool(args.freeze_bn), backbone_lr_mult=args.backbone_lr_mult, l2sp=args.l2sp)
 
     evaluate(test_dataset, output_dir=run_output_path, model=model, batch_size=args.batch_size, num_workers=args.num_workers, device=args.device)
 

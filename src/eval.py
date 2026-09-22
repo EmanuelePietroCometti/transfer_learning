@@ -70,9 +70,9 @@ def evaluate(test_dataset, output_dir, model, batch_size, num_workers, device="c
     cm = confusion_matrix(val_labels, val_preds)
 
     acc = report_dict["accuracy"]
-    prec = report_dict["weighted avg"]["precision"]
-    rec = report_dict["weighted avg"]["recall"]
-    f1 = report_dict["weighted avg"]["f1-score"]
+    prec = report_dict["macro avg"]["precision"]
+    rec = report_dict["macro avg"]["recall"]
+    f1 = report_dict["macro avg"]["f1-score"]
 
     summary_text = (
         f"Test Report:\n"

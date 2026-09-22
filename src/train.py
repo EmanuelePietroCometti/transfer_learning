@@ -7,7 +7,30 @@ from sklearn.metrics import classification_report
 import os
 from sklearn.metrics import roc_auc_score
 
-def train(ckpt_path, train_dataset, val_dataset, writer, batch_size=16, device="cuda", lr=1e-4, epochs=15, seed=42, num_workers=4, print_report=5):
+def set_bn_eval(model):
+    # running stats delle BN congelate; gamma/beta restano addestrabili
+    for m in model.modules():
+        if isinstance(m, nn.BatchNorm2d):
+            m.eval()
+
+def build_param_groups(model, lr, backbone_lr_mult, weight_decay, l2sp):
+    # testa con lr pieno, backbone con lr * backbone_lr_mult, niente decay su BN e bias
+    head, decay, no_decay = [], [], []
+    for name, p in model.named_parameters():
+        if name.startswith("fc."):
+            head.append(p)
+        elif p.ndim == 1:
+            no_decay.append(p)
+        else:
+            decay.append(p)
+    backbone_lr = lr * backbone_lr_mult
+    return [
+        {"params": head, "lr": lr, "weight_decay": weight_decay},
+        {"params": decay, "lr": backbone_lr, "weight_decay": 0.0 if l2sp > 0 else weight_decay},
+        {"params": no_decay, "lr": backbone_lr, "weight_decay": 0.0},
+    ]
+
+def train(ckpt_path, train_dataset, val_dataset, writer, batch_size=16, device="cuda", lr=1e-4, epochs=15, seed=42, num_workers=4, print_report=5, freeze_bn=False, backbone_lr_mult=1.0, weight_decay=0.01, l2sp=0.0):
     torch.manual_seed(seed)
 
     # Instanziamento del dataloader con batch size e mescolamento nel caso del train
@@ -21,12 +44,22 @@ def train(ckpt_path, train_dataset, val_dataset, writer, batch_size=16, device="
 
     loss_fn = nn.CrossEntropyLoss()
 
-    optimizer = torch.optim.AdamW(model.parameters(), lr)
-    scheduler = CosineAnnealingLR(optimizer, T_max=epochs)
+    optimizer = torch.optim.AdamW(build_param_groups(model, lr, backbone_lr_mult, weight_decay, l2sp))
 
+    # Pesi ImageNet di riferimento per L2-SP (solo i pesi conv della backbone)
+    anchors = [(p, p.detach().clone()) for n, p in model.named_parameters()
+               if l2sp > 0 and not n.startswith("fc.") and p.ndim > 1]
+
+
+    best_score = (-1.0, float("-inf"))
     best_auroc = -1.0
+    best_state = None
     for epoch in range(epochs):
         model.train()
+
+        if freeze_bn:
+            set_bn_eval(model)  
+
         running_loss = 0.0
 
         for images, labels in train_dataloader:
@@ -40,6 +73,13 @@ def train(ckpt_path, train_dataset, val_dataset, writer, batch_size=16, device="
             loss.backward()
             optimizer.step()
 
+             # richiamo verso i pesi ImageNet
+            if anchors:
+                with torch.no_grad():
+                    lr_backbone = optimizer.param_groups[1]["lr"]
+                    for p, p0 in anchors:
+                        p.sub_(lr_backbone * l2sp * (p - p0))
+
             running_loss += loss.item()
 
         avg_loss = running_loss/len(train_dataloader)
@@ -47,8 +87,9 @@ def train(ckpt_path, train_dataset, val_dataset, writer, batch_size=16, device="
         print(f"Epoch: {epoch} - Loss: {avg_loss:.4f}")
 
 
-        if epoch % print_report == 0:
+        if (epoch+1) % print_report == 0 or epoch == epochs-1:
             val_preds, val_labels, val_y_probs = [],[],[]
+            val_loss = 0.0
 
             model.eval()
             with torch.no_grad():
@@ -57,6 +98,7 @@ def train(ckpt_path, train_dataset, val_dataset, writer, batch_size=16, device="
 
                     # Forward pass
                     logits = model(images)
+                    val_loss += loss_fn(logits, labels).item() * labels.size(0)
                     _, pred = torch.max(logits, 1)
 
                     # Prendo le probabilità di predizione per la classe positiva
@@ -67,6 +109,8 @@ def train(ckpt_path, train_dataset, val_dataset, writer, batch_size=16, device="
                     val_labels.extend(labels.tolist())
                     val_y_probs.extend(probs.tolist())
 
+            val_loss /= len(val_labels)
+            writer.add_scalar("Val/Loss", val_loss, epoch)
 
             # Calcolo delle metriche di classificazione
             report_dict = classification_report(val_labels, val_preds, output_dict=True)
@@ -75,9 +119,9 @@ def train(ckpt_path, train_dataset, val_dataset, writer, batch_size=16, device="
             auroc = roc_auc_score(val_labels, val_y_probs)
 
             acc = report_dict["accuracy"]
-            prec = report_dict["weighted avg"]["precision"]
-            rec = report_dict["weighted avg"]["recall"]
-            f1 = report_dict["weighted avg"]["f1-score"]
+            prec = report_dict["macro avg"]["precision"]
+            rec = report_dict["macro avg"]["recall"]
+            f1 = report_dict["macro avg"]["f1-score"]
 
             # Stampo le metriche di predizione su TensorBoard
             writer.add_scalar("Val/Accuracy", acc, epoch)
@@ -95,21 +139,25 @@ def train(ckpt_path, train_dataset, val_dataset, writer, batch_size=16, device="
                 f" - AUROC:     {auroc:.4f}"
             )
 
-            if auroc > best_auroc:
+            score = (auroc, -val_loss)
+            if score > best_score:
+                best_score = score
                 best_auroc = auroc
                 # Salvataggio del backbone senza fc e head 
-                sd = {k: v for k, v in model.state_dict().items() if not k.startswith("fc.")}
+                best_state = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
+                sd = {k: v for k, v in best_state.items() if not k.startswith("fc.")}
+                fc = {k: v for k, v in best_state.items() if k.startswith("fc.")}
 
                 os.makedirs(ckpt_path, exist_ok=True)
                 file_path = os.path.join(ckpt_path, "best_encoder.pth")
 
                 # Salvataggio del modello
-                torch.save({"encoder": sd}, file_path)
+                torch.save({"encoder": sd, "fc": fc, "epoch": epoch, "val_auroc": auroc, "val_loss": val_loss}, file_path)
                 print(f"  -> Saved {file_path} (AUROC {auroc:.4f})")
 
-        scheduler.step()
-        writer.add_scalar("Train/Learning_Rate", scheduler.get_last_lr()[0], epoch)
 
     writer.close()
+    if best_state is not None:
+        model.load_state_dict(best_state)
     return best_auroc, model
 
