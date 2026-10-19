@@ -6,6 +6,17 @@ from src.train import train
 from src.eval import evaluate
 import os
 from src.config import IMG_MEAN, IMG_STD
+CLASS_TO_IDX = {"good": 0, "defect": 1}
+
+
+class GoodDefectFolder(datasets.ImageFolder):
+    def find_classes(self, directory):
+        found = sorted(e.name for e in os.scandir(directory) if e.is_dir())
+        if set(found) != set(CLASS_TO_IDX):
+            raise FileNotFoundError(
+                f"In {directory} servono esattamente le cartelle {sorted(CLASS_TO_IDX)}, trovate: {found}"
+            )
+        return list(CLASS_TO_IDX), dict(CLASS_TO_IDX)
 
 def set_deterministic(seed=42):
     torch.manual_seed(seed)
@@ -38,9 +49,9 @@ def main():
     parser.add_argument("--backbone_lr_mult", type=float, default=1.0, help="LR backbone = lr * mult")
     parser.add_argument("--l2sp", type=float, default=0.0, help="Richiamo verso i pesi ImageNet (0 = disattivo)")
 
-
     # Seed per la riproducibilità degli esperimenti
     parser.add_argument("--seed", type=int, default=42, help="Random seed per riproducibilità")
+    parser.add_argument("--split_seed", type=int, default=0, help="Seed dello split train/val/test: tienilo uguale in tutti i run")
 
     parser.add_argument("--num_workers", type=int, default=4, help="Numero di workers per il dataloader")
 
@@ -69,14 +80,15 @@ def main():
     ])
 
     # Caricamento del dataset con divisione in cartelle
-    dataset = datasets.ImageFolder(root=args.dataset_path, transform=transform)
+    dataset = GoodDefectFolder(root=args.dataset_path, transform=transform)
+    print("class_to_idx:", dataset.class_to_idx)
 
     # Split del dataset
     total_size = len(dataset)
     train_size = int(total_size * args.train_rate)
     val_size = int(total_size* args.val_rate)
     test_size = total_size - train_size - val_size
-    split_generator = torch.Generator().manual_seed(args.seed)
+    split_generator = torch.Generator().manual_seed(args.split_seed)
     train_dataset, val_dataset, test_dataset = torch.utils.data.random_split(dataset, [train_size, val_size, test_size], generator=split_generator)
 
     _, model = train(ckpt_path=run_ckpt_path, train_dataset=train_dataset, val_dataset=val_dataset, writer=writer, batch_size=args.batch_size, device=args.device, lr=args.lr, epochs=args.epochs, seed=args.seed, num_workers=args.num_workers, print_report=args.print_report, freeze_bn=bool(args.freeze_bn), backbone_lr_mult=args.backbone_lr_mult, l2sp=args.l2sp)
