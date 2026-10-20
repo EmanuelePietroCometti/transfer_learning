@@ -48,6 +48,9 @@ def main():
     parser.add_argument("--freeze_bn", type=int, default=0, help="1 = running stats delle BN congelate")
     parser.add_argument("--backbone_lr_mult", type=float, default=1.0, help="LR backbone = lr * mult")
     parser.add_argument("--l2sp", type=float, default=0.0, help="Richiamo verso i pesi ImageNet (0 = disattivo)")
+    parser.add_argument("--freeze_layers", type=str, nargs="*", default=[], help="Moduli da congelare (pesi + BN in eval), es.: conv1 bn1 layer1 layer2")
+    parser.add_argument("--head_on_layer3", type=int, default=0, help="1 = rimuove il layer4 e mette la testa (max-pool + linear) sul layer3")
+    parser.add_argument("--lam_preserve", type=float, default=0.0, help="Peso della loss di preservazione delle feature del layer3 rispetto a ImageNet (0 = disattiva)")
 
     # Seed per la riproducibilità degli esperimenti
     parser.add_argument("--seed", type=int, default=42, help="Random seed per riproducibilità")
@@ -91,7 +94,7 @@ def main():
     split_generator = torch.Generator().manual_seed(args.split_seed)
     train_dataset, val_dataset, test_dataset = torch.utils.data.random_split(dataset, [train_size, val_size, test_size], generator=split_generator)
 
-    _, model = train(ckpt_path=run_ckpt_path, train_dataset=train_dataset, val_dataset=val_dataset, writer=writer, batch_size=args.batch_size, device=args.device, lr=args.lr, epochs=args.epochs, seed=args.seed, num_workers=args.num_workers, print_report=args.print_report, freeze_bn=bool(args.freeze_bn), backbone_lr_mult=args.backbone_lr_mult, l2sp=args.l2sp)
+    _, model = train(ckpt_path=run_ckpt_path, train_dataset=train_dataset, val_dataset=val_dataset, writer=writer, batch_size=args.batch_size, device=args.device, lr=args.lr, epochs=args.epochs, seed=args.seed, num_workers=args.num_workers, print_report=args.print_report, freeze_bn=bool(args.freeze_bn), backbone_lr_mult=args.backbone_lr_mult, l2sp=args.l2sp, freeze_layers=args.freeze_layers, head_on_layer3=bool(args.head_on_layer3), lam_preserve=args.lam_preserve)
 
     evaluate(test_dataset, output_dir=run_output_path, model=model, batch_size=args.batch_size, num_workers=args.num_workers, device=args.device)
 
