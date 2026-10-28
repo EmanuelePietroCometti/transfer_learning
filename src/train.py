@@ -82,7 +82,7 @@ def train(ckpt_path, train_dataset, val_dataset, writer, batch_size=16, device="
 
     loss_fn = nn.CrossEntropyLoss()
 
-    optimizer = torch.optim.AdamW(build_param_groups(model, lr, backbone_lr_mult, weight_decay, l2sp))
+    optimizer = torch.optim.Adam(build_param_groups(model, lr, backbone_lr_mult, weight_decay, l2sp))
 
     # Pesi ImageNet di riferimento per L2-SP (solo i pesi conv della backbone)
     anchors = [(p, p.detach().clone()) for n, p in model.named_parameters()

@@ -5,3 +5,9 @@ output/
 runs/
 __pycache__/
 .vscode/
+diff_v1_v2_train/
+diff_v1_v2_test/
+diff_v0_v1_test/
+diff_v0_v2_test/
+risultati_separabilita/
+risultati_separabilita_v0/
